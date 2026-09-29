@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>Відеозаставка магазину</title>
+<meta name="description" content="Інтерактивна відеозаставка для магазину (PWA)" />
+<meta name="theme-color" content="#16130f" />
+
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Заставка" />
+<meta name="format-detection" content="telephone=no" />
+
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- Основний екран: навмисно порожній/нейтральний -->
+  <main id="main-screen"></main>
+
+  <!-- Відеозаставка -->
+  <div id="screensaver" class="hidden" aria-hidden="true">
+    <video
+      id="screensaver-video"
+      playsinline
+      muted
+      loop
+      preload="auto"
+      disablePictureInPicture
+      disableRemotePlayback
+    ></video>
+  </div>
+
+  <!-- Невидима зона для потрійного натискання (відкриває адмін-панель) -->
+  <div id="admin-trigger-zone" aria-hidden="true"></div>
+
+  <!-- Адмін-панель -->
+  <div id="admin-panel" class="hidden" role="dialog" aria-modal="true" aria-label="Адмін-панель">
+    <div class="admin-card">
+      <h2>Адмін-панель</h2>
+      <p id="admin-status" class="admin-status" aria-live="polite"></p>
+
+      <section class="admin-section">
+        <h3>Відео</h3>
+        <div class="admin-radio-group" role="radiogroup" aria-label="Джерело відео">
+          <label class="admin-toggle">
+            <input type="radio" name="video-source" id="admin-source-local" value="local" checked />
+            <span>Локальне (лише цей пристрій)</span>
+          </label>
+          <label class="admin-toggle">
+            <input type="radio" name="video-source" id="admin-source-synced" value="synced" />
+            <span>Синхронізоване (усі пристрої)</span>
+          </label>
+        </div>
+        <p id="admin-current-video-name" class="admin-hint">Відео не вибрано</p>
+        <label class="admin-file-label">
+          Обрати файл відео
+          <input type="file" id="admin-video-input" accept="video/mp4,video/*" hidden />
+        </label>
+        <button type="button" id="admin-delete-video" class="admin-btn admin-btn-secondary">Видалити відео</button>
+        <label class="admin-toggle">
+          <input type="checkbox" id="admin-auto-toggle" checked />
+          <span>Показувати відео</span>
+        </label>
+      </section>
+
+      <section class="admin-section">
+        <h3>Звук</h3>
+        <label class="admin-toggle">
+          <input type="checkbox" id="admin-mute-toggle" checked />
+          <span>Без звуку</span>
+        </label>
+        <label class="admin-range-label">
+          Гучність
+          <input type="range" id="admin-volume-slider" min="0" max="1" step="0.05" value="1" />
+        </label>
+      </section>
+
+      <div class="admin-actions">
+        <button type="button" id="admin-save-btn" class="admin-btn admin-btn-primary">Зберегти</button>
+        <button type="button" id="admin-exit-btn" class="admin-btn admin-btn-secondary">Вийти</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Пропозиція встановити застосунок -->
+  <div id="install-banner" class="hidden">
+    <p id="install-text">Встановіть додаток на пристрій для роботи у повноекранному режимі</p>
+    <p id="install-ios-hint" class="hidden">
+      Натисніть «Поділитися» <span aria-hidden="true">⬆</span> внизу екрана, потім оберіть «На екран Домівка»
+    </p>
+    <div class="install-actions">
+      <button type="button" id="install-btn" class="admin-btn admin-btn-primary">Встановити</button>
+      <button type="button" id="install-dismiss-btn" class="admin-btn admin-btn-secondary">Закрити</button>
+    </div>
+  </div>
+
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
