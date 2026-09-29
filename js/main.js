@@ -16,7 +16,7 @@ const DEFAULT_SETTINGS = {
   autoEnabled: true,
   muted: true,
   volume: 1,
-  videoSource: 'local',
+  videoSource: VideoSource.isCloudConfigured() ? 'cloud' : 'local',
 };
 
 async function loadSettings() {

@@ -7,7 +7,7 @@
 // підвищіть CACHE_NAME (наприклад, "v2"), інакше пристрої з уже встановленим
 // PWA продовжуватимуть використовувати старий кеш.
 
-const CACHE_NAME = 'screensaver-shell-v1.1';
+const CACHE_NAME = 'screensaver-shell-v4';
 
 const APP_SHELL = [
   './',
@@ -23,8 +23,8 @@ const APP_SHELL = [
   './js/fullscreen.js',
   './js/videoSource.js',
   './js/exitApp.js',
-  './js/sync.js',
-  './js/firebase-config.js',
+  './js/cloudSync.js',
+  './js/cloud-config.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',

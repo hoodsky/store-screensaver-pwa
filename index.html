@@ -55,13 +55,24 @@
             <span>Локальне (лише цей пристрій)</span>
           </label>
           <label class="admin-toggle">
-            <input type="radio" name="video-source" id="admin-source-synced" value="synced" />
-            <span>Синхронізоване (усі пристрої)</span>
+            <input type="radio" name="video-source" id="admin-source-synced" value="cloud" />
+            <span>Спільне відео (усі пристрої)</span>
           </label>
         </div>
         <p id="admin-current-video-name" class="admin-hint">Відео не вибрано</p>
+        <p class="admin-hint">У спільному режимі вибране відео автоматично з’явиться на всіх пристроях і кешуватиметься для офлайн-відтворення.</p>
+        <div id="admin-shared-options" class="hidden">
+          <label class="admin-range-label">Пароль завантаження
+            <input type="password" id="admin-sync-password" autocomplete="current-password" />
+          </label>
+          <label class="admin-range-label">Посилання на публічне відео Google Drive
+            <input type="url" id="admin-drive-link" placeholder="https://drive.google.com/file/d/..." autocomplete="url" />
+          </label>
+          <button type="button" id="admin-import-drive" class="admin-btn admin-btn-secondary">Імпортувати з Drive та синхронізувати</button>
+          <button type="button" id="admin-refresh-drive" class="admin-btn admin-btn-secondary">Перевірити синхронізацію</button>
+        </div>
         <label class="admin-file-label">
-          Обрати файл відео
+          <span id="admin-video-label">Обрати відеофайл</span>
           <input type="file" id="admin-video-input" accept="video/mp4,video/*" hidden />
         </label>
         <button type="button" id="admin-delete-video" class="admin-btn admin-btn-secondary">Видалити відео</button>
