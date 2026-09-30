@@ -1,4 +1,5 @@
-// Selects a device-local video or one shared video stored in Cloudflare R2.
+// Selects a device-local video or one shared video in Google Drive, with its
+// current-file pointer stored in Cloudflare Workers KV.
 import * as DB from './db.js';
 import * as Screensaver from './screensaver.js';
 import * as CloudSync from './cloudSync.js';

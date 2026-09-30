@@ -1,84 +1,77 @@
-# Спільне відео через Cloudflare R2 (без входу на кіосках)
+# Спільне відео: Google Drive + Cloudflare Workers KV (без R2)
 
-У спільному режимі адміністратор завантажує відео з пристрою або вставляє
-публічне посилання Google Drive. Cloudflare Worker приймає команду, файл
-зберігається в R2, а всі пристрої перевіряють версію й кешують її в IndexedDB.
-Для звичайного відтворення та синхронізації кіоскам не потрібен акаунт Google.
+Відеофайл лежить у Google Drive. Cloudflare Worker зберігає лише маленький
+публічний покажчик на актуальне відео в Workers KV і передає файл пристроям.
+R2 не використовується, тож R2 subscription і його платіжний метод не потрібні.
 
-## Вартість і доступ
+Адміністратор авторизується в Google лише під час завантаження відео.
+Відео автоматично відкривається для перегляду за посиланням, тому кіоски
+Google-акаунт не потребують. Після першого завантаження PWA зберігає копію
+в IndexedDB і відтворює її офлайн.
 
-На дату налаштування стандартний клас Cloudflare R2 включає 10 GB-місяць
-сховища, 1 млн Class A та 10 млн Class B операцій на місяць; передавання
-даних із R2 в інтернет безкоштовне. Cloudflare Workers Free включає 100 000
-запитів на добу. Понад безкоштовні обсяги можуть застосовуватись тарифи
-платформи, тому перевір актуальні [ціни R2](https://developers.cloudflare.com/r2/pricing/)
-та [ліміти Workers](https://developers.cloudflare.com/workers/platform/limits/).
+## Безоплатні ліміти
 
-## Одноразове розгортання
+Workers KV Free має до 100 000 читань на добу, 1 000 записів на добу та
+1 GB сховища; Worker у цьому проєкті зберігає в KV лише один невеликий JSON.
+Якщо безкоштовні денні ліміти KV вичерпаються, операції KV перестануть
+працювати до скидання ліміту — платний план не підключається автоматично.
+Див. [ліміти KV](https://developers.cloudflare.com/kv/platform/limits/) та
+[ціни Workers](https://developers.cloudflare.com/workers/platform/pricing/).
 
-Потрібні Node.js і безплатний Cloudflare account.
+Відео займає місце у Google Drive та підпорядковується квотам Drive. Публічний
+файл доступний будь-кому, хто має посилання. Поширення відео за посиланням
+потрібне, щоб пристрої могли отримувати його без входу в Google.
 
-1. У Cloudflare Dashboard створи bucket `store-screensaver-media` у класі
-   **Standard**.
-2. У розділі **R2 → Manage R2 API Tokens** створи token з доступом Object
-   Read & Write лише до цього bucket. Збережи Account ID, Access Key ID та
-   Secret Access Key.
-3. У `worker/wrangler.jsonc` вистав `ALLOWED_ORIGIN` на origin PWA (для
-   GitHub Pages цього проєкту `https://hoodsky.github.io`; без `/repo-path`).
-   Якщо потрібно, заміни ім'я bucket у `bucket_name` та `R2_BUCKET_NAME`.
-4. З папки `worker/` виконай:
+## Одноразове налаштування Google
 
-   ```sh
+1. У Google Cloud Console створи або вибери проєкт та увімкни **Google Drive API**.
+2. Створи API key і обмеж його лише Google Drive API. Він зберігається як
+   секрет Worker, не в JavaScript.
+3. Налаштуй OAuth consent screen та створи OAuth client для **Web application**.
+   Додай Authorized JavaScript origin:
+   `https://jade-gingersnap-2050c5.netlify.app`.
+4. Встав OAuth Client ID у `js/google-drive-config.js`. Це публічний client ID;
+   токен доступу видається Google лише адміністратору під час завантаження.
+   Запитується вузький scope `drive.file`, а не доступ до всього Drive.
+
+## Одноразове налаштування Cloudflare
+
+Потрібні Node.js і Cloudflare account. R2 не вмикай.
+
+1. Створи Workers KV namespace з назвою `store-screensaver-meta`.
+2. Скопіюй ID namespace у `worker/wrangler.jsonc` замість
+   `PASTE_KV_NAMESPACE_ID_HERE`.
+3. У PowerShell з папки `worker/` виконай:
+
+   ```powershell
    npm install
    npx wrangler login
-   npx wrangler secret put R2_ACCOUNT_ID
-   npx wrangler secret put R2_ACCESS_KEY_ID
-   npx wrangler secret put R2_SECRET_ACCESS_KEY
    npx wrangler secret put ADMIN_PASSWORD
    npx wrangler secret put DRIVE_API_KEY
    npx wrangler deploy
    ```
 
-   Для `ADMIN_PASSWORD` задай довгий випадковий пароль. Для `DRIVE_API_KEY`
-   створи API key в Google Cloud Console, увімкни Google Drive API та обмеж
-   ключ лише цим API. Цей ключ зберігається як Worker secret і не потрапляє
-   в JavaScript чи на пристрої. Він потрібен лише для імпорту публічних
-   файлів Drive.
-5. Після деплою скопіюй адресу `*.workers.dev` у
-   `js/cloud-config.js` в поле `apiBaseUrl` і задеплой PWA. Це одноразове
-   з'єднання PWA зі сховищем.
-
-### CORS для прямого завантаження
-
-У Cloudflare R2 bucket відкрий **Settings → CORS Policy** і додай правило:
-
-```json
-[
-  {
-    "AllowedOrigins": ["https://hoodsky.github.io"],
-    "AllowedMethods": ["PUT"],
-    "AllowedHeaders": ["*"],
-    "ExposeHeaders": ["ETag"],
-    "MaxAgeSeconds": 3600
-  }
-]
-```
-
-Якщо PWA розміщена на іншому origin, заміни origin і в цій політиці, і в
-`ALLOWED_ORIGIN` у `worker/wrangler.jsonc`.
+   Для `ADMIN_PASSWORD` задай довгий унікальний пароль. У Worker secret
+   `DRIVE_API_KEY` встав API key з Google Cloud Console.
+4. Скопіюй адресу Worker (наприклад, `https://store-screensaver-sync.<account>.workers.dev`)
+   у поле `apiBaseUrl` файла `js/cloud-config.js`.
+5. Зміни в `worker/wrangler.jsonc` та JavaScript мають бути задеплоєні разом із
+   PWA на Netlify. Домен сайту вже заданий у `ALLOWED_ORIGIN`.
 
 ## Щоденне використання
 
-1. На будь-якому пристрої відкрий адмін-панель і вибери **Спільне відео**.
-2. Введи `ADMIN_PASSWORD`, який задав під час налаштування Worker.
-3. Для файла з пристрою натисни **Обрати відеофайл**. Для Drive встав
-   посилання з **Anyone with the link → Viewer** і натисни **Імпортувати з
-   Drive та синхронізувати**. Приватний Drive-файл цей варіант не читає.
-4. Інші пристрої побачать нову версію при старті, поверненні онлайн або
-   автоматичній перевірці раз на 10 хвилин. Перевірити вручну можна з
-   адмін-панелі.
-5. Після першого успішного завантаження всі пристрої програють свою кешовану
-   копію офлайн. Для отримання нової версії кожному пристрою потрібен інтернет.
+1. Відкрий адмін-панель і вибери **Спільне відео**.
+2. Для файла з пристрою натисни **Завантажити відео для всіх пристроїв**.
+   Google попросить адміністратора увійти та дозволити застосунку керувати
+   файлами, які воно створює. Цей вхід потрібен лише на пристрої адміністратора.
+   Новий файл буде опублікований як доступний за посиланням.
+3. Для вже завантаженого відео встав публічне посилання Google Drive і натисни
+   **Імпортувати з Drive та синхронізувати**. Файл має бути доступний
+   **Anyone with the link → Viewer**.
+4. Інші пристрої перевіряють оновлення під час запуску, після повернення онлайн
+   та кожні 10 хвилин. Після першого кешування вони грають відео офлайн.
 
-Завантаження з пристрою й імпорт із Drive вимагають пароль адміністратора;
-на інших пристроях він не потрібен для перегляду та отримання відео.
+Заміна вмісту файла Drive, який уже підключено як спільне відео, виявиться при
+наступній перевірці. При завантаженні з пристрою застосунок оновлює свій
+керований Drive-файл; якщо попереднє відео було підключене стороннім посиланням,
+застосунок створить власний керований файл.

@@ -131,7 +131,7 @@ async function handleVideoSelect(event) {
   if (!file) return;
   if (currentSource === 'cloud') {
     fields.videoInput.disabled = true;
-    setStatus('Завантажую відео у спільне сховище…');
+    setStatus('Завантажую відео в Google Drive…');
     try {
       const result = await VideoSource.uploadSharedVideo(file, fields.syncPassword.value);
       setStatus(`Відео «${result.fileName}» синхронізовано`);
@@ -160,7 +160,7 @@ async function handleDriveImport() {
     return;
   }
   fields.driveImportBtn.disabled = true;
-  setStatus('Імпортую відео з Google Drive…');
+  setStatus('Підключаю спільне відео з Google Drive…');
   try {
     const result = await VideoSource.importDriveLink(link, fields.syncPassword.value);
     setStatus(`Відео «${result.fileName}» синхронізовано`);

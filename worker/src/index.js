@@ -1,8 +1,4 @@
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-
-const VIDEO_KEY = 'videos/current';
-const MANIFEST_KEY = 'videos/manifest.json';
+const MANIFEST_KEY = 'current-video';
 const MAX_VIDEO_BYTES = 5 * 1024 * 1024 * 1024;
 
 function corsHeaders(request, env) {
@@ -23,17 +19,8 @@ function json(data, status, cors) {
   });
 }
 
-function client(env) {
-  return new S3Client({
-    region: 'auto',
-    endpoint: `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-    credentials: { accessKeyId: env.R2_ACCESS_KEY_ID, secretAccessKey: env.R2_SECRET_ACCESS_KEY },
-  });
-}
-
 function isAdmin(request, env) {
-  const supplied = request.headers.get('Authorization') || '';
-  return supplied === `Bearer ${env.ADMIN_PASSWORD}`;
+  return Boolean(env.ADMIN_PASSWORD) && request.headers.get('Authorization') === `Bearer ${env.ADMIN_PASSWORD}`;
 }
 
 function parseDriveLink(link) {
@@ -48,19 +35,50 @@ function parseDriveLink(link) {
   return { fileId, resourceKey: url.searchParams.get('resourcekey') || '' };
 }
 
-async function publishManifest(env, fileName = '') {
-  const head = await env.MEDIA.head(VIDEO_KEY);
-  if (!head) throw new Error('Відео ще не завантажено');
+function driveUrl(fileId, env, media = false) {
+  const url = new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`);
+  url.searchParams.set('key', env.DRIVE_API_KEY);
+  if (media) {
+    url.searchParams.set('alt', 'media');
+  } else {
+    url.searchParams.set('fields', 'id,name,mimeType,size,modifiedTime,md5Checksum,trashed');
+  }
+  return url;
+}
+
+async function getDriveMetadata(fileId, resourceKey, env) {
+  const headers = resourceKey ? { 'X-Goog-Drive-Resource-Keys': `${fileId}/${resourceKey}` } : {};
+  const response = await fetch(driveUrl(fileId, env), { headers });
+  if (!response.ok) throw new Error(`Google Drive metadata HTTP ${response.status}; перевірте Anyone with the link`);
+  const meta = await response.json();
+  if (meta.trashed) throw new Error('Відеофайл переміщено в кошик Google Drive');
+  if (!String(meta.mimeType || '').startsWith('video/')) throw new Error('Обраний файл не є відео');
+  if (Number(meta.size) > MAX_VIDEO_BYTES) throw new Error('Відео перевищує ліміт 5 ГБ');
+  return meta;
+}
+
+async function publishDriveFile(env, fileId, resourceKey, managedByApp = false) {
+  const meta = await getDriveMetadata(fileId, resourceKey, env);
   const manifest = {
-    etag: head.etag,
-    fileName: fileName || head.customMetadata?.fileName || 'video',
-    size: head.size,
-    contentType: head.httpMetadata?.contentType || 'video/mp4',
-    modifiedAt: head.uploaded?.toISOString?.() || new Date().toISOString(),
+    fileId: meta.id,
+    resourceKey: resourceKey || '',
+    fileName: String(meta.name || 'video').replace(/[\r\n]/g, '').slice(0, 200),
+    mimeType: meta.mimeType || 'video/mp4',
+    size: Number(meta.size || 0),
+    etag: meta.md5Checksum || meta.modifiedTime || new Date().toISOString(),
+    modifiedAt: meta.modifiedTime || '',
+    managedByApp,
   };
-  await env.MEDIA.put(MANIFEST_KEY, JSON.stringify(manifest), {
-    httpMetadata: { contentType: 'application/json; charset=utf-8' },
-  });
+  const previous = await env.VIDEO_META.get(MANIFEST_KEY, 'json');
+  const unchanged = previous &&
+    previous.fileId === manifest.fileId &&
+    previous.resourceKey === manifest.resourceKey &&
+    previous.fileName === manifest.fileName &&
+    previous.mimeType === manifest.mimeType &&
+    previous.size === manifest.size &&
+    previous.etag === manifest.etag &&
+    previous.managedByApp === manifest.managedByApp;
+  if (!unchanged) await env.VIDEO_META.put(MANIFEST_KEY, JSON.stringify(manifest));
   return manifest;
 }
 
@@ -77,46 +95,31 @@ export default {
     const url = new URL(request.url);
     try {
       if (request.method === 'GET' && url.pathname.endsWith('/manifest')) {
-        const object = await env.MEDIA.get(MANIFEST_KEY);
-        if (!object) return json({ error: 'Shared video has not been uploaded yet' }, 404, cors);
-        return new Response(object.body, { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...cors } });
+        const manifest = await env.VIDEO_META.get(MANIFEST_KEY, 'json');
+        if (!manifest) return json({ error: 'Спільне відео ще не задано' }, 404, cors);
+        if (!env.DRIVE_API_KEY) return json({ error: 'Drive API key не налаштовано у Worker' }, 503, cors);
+        return json(await publishDriveFile(env, manifest.fileId, manifest.resourceKey, Boolean(manifest.managedByApp)), 200, cors);
       }
 
       if (request.method === 'GET' && url.pathname.endsWith('/video')) {
-        const object = await env.MEDIA.get(VIDEO_KEY);
-        if (!object) return json({ error: 'Shared video has not been uploaded yet' }, 404, cors);
-        const headers = new Headers({
-          'Content-Type': object.httpMetadata?.contentType || 'video/mp4',
-          'Content-Length': String(object.size),
-          'ETag': `"${object.etag}"`,
-          'Cache-Control': 'public, max-age=300',
-          ...cors,
-        });
-        return new Response(object.body, { headers });
-      }
-
-      if (request.method === 'POST' && url.pathname.endsWith('/upload-url')) {
-        if (!isAdmin(request, env)) return json({ error: 'Неправильний пароль адміністратора' }, 401, cors);
-        const body = await request.json();
-        if (!String(body.contentType || '').startsWith('video/')) return json({ error: 'Оберіть відеофайл' }, 400, cors);
-        if (!Number.isFinite(body.size) || body.size <= 0 || body.size > MAX_VIDEO_BYTES) {
-          return json({ error: 'Розмір відео має бути від 1 байта до 5 ГБ' }, 413, cors);
+        const manifest = await env.VIDEO_META.get(MANIFEST_KEY, 'json');
+        if (!manifest) return json({ error: 'Спільне відео ще не задано' }, 404, cors);
+        const headers = manifest.resourceKey
+          ? { 'X-Goog-Drive-Resource-Keys': `${manifest.fileId}/${manifest.resourceKey}` }
+          : {};
+        const response = await fetch(driveUrl(manifest.fileId, env, true), { headers });
+        if (!response.ok || !response.body) {
+          return json({ error: `Не вдалося завантажити відео з Drive (HTTP ${response.status})` }, 502, cors);
         }
-        const s3 = client(env);
-        const command = new PutObjectCommand({
-          Bucket: env.R2_BUCKET_NAME,
-          Key: VIDEO_KEY,
-          ContentType: body.contentType,
+        return new Response(response.body, {
+          headers: {
+            'Content-Type': manifest.mimeType || response.headers.get('Content-Type') || 'video/mp4',
+            'Content-Length': String(manifest.size || response.headers.get('Content-Length') || ''),
+            'ETag': `"${manifest.etag}"`,
+            'Cache-Control': 'public, max-age=300',
+            ...cors,
+          },
         });
-        const signedUrl = await getSignedUrl(s3, command, { expiresIn: 600 });
-        return json({ url: signedUrl }, 200, cors);
-      }
-
-      if (request.method === 'POST' && url.pathname.endsWith('/complete')) {
-        if (!isAdmin(request, env)) return json({ error: 'Неправильний пароль адміністратора' }, 401, cors);
-        const { fileName = '' } = await request.json();
-        const manifest = await publishManifest(env, String(fileName).replace(/[\r\n]/g, '').slice(0, 200));
-        return json(manifest, 200, cors);
       }
 
       if (request.method === 'POST' && url.pathname.endsWith('/import-drive')) {
@@ -124,23 +127,16 @@ export default {
         if (!env.DRIVE_API_KEY) return json({ error: 'Drive API key не налаштовано у Worker' }, 503, cors);
         const { link } = await request.json();
         const { fileId, resourceKey } = parseDriveLink(String(link || ''));
-        const base = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`;
-        const params = new URLSearchParams({ key: env.DRIVE_API_KEY, fields: 'id,name,mimeType,size,trashed' });
-        const driveHeaders = resourceKey ? { 'X-Goog-Drive-Resource-Keys': `${fileId}/${resourceKey}` } : {};
-        const metaResponse = await fetch(`${base}?${params}`, { headers: driveHeaders });
-        if (!metaResponse.ok) return json({ error: `Google Drive metadata HTTP ${metaResponse.status}; перевірте Anyone with the link` }, 502, cors);
-        const meta = await metaResponse.json();
-        if (meta.trashed) return json({ error: 'Файл Google Drive переміщено в кошик' }, 400, cors);
-        if (!String(meta.mimeType || '').startsWith('video/')) return json({ error: 'Обране посилання не веде на відео' }, 400, cors);
-        if (Number(meta.size) > MAX_VIDEO_BYTES) return json({ error: 'Відео перевищує ліміт 5 ГБ' }, 413, cors);
-        const paramsMedia = new URLSearchParams({ key: env.DRIVE_API_KEY, alt: 'media' });
-        const media = await fetch(`${base}?${paramsMedia}`, { headers: driveHeaders });
-        if (!media.ok || !media.body) return json({ error: `Не вдалося завантажити відео з Drive (HTTP ${media.status})` }, 502, cors);
-        await env.MEDIA.put(VIDEO_KEY, media.body, {
-          httpMetadata: { contentType: meta.mimeType },
-          customMetadata: { fileName: String(meta.name || 'video').slice(0, 200) },
-        });
-        return json(await publishManifest(env, meta.name || 'video'), 200, cors);
+        return json(await publishDriveFile(env, fileId, resourceKey), 200, cors);
+      }
+
+      if (request.method === 'POST' && url.pathname.endsWith('/publish')) {
+        if (!isAdmin(request, env)) return json({ error: 'Неправильний пароль адміністратора' }, 401, cors);
+        if (!env.DRIVE_API_KEY) return json({ error: 'Drive API key не налаштовано у Worker' }, 503, cors);
+        const { fileId, resourceKey = '' } = await request.json();
+        if (!/^[\w-]+$/.test(String(fileId || ''))) return json({ error: 'ID файла Google Drive некоректний' }, 400, cors);
+        const manifest = await publishDriveFile(env, String(fileId), String(resourceKey), true);
+        return json(manifest, 200, cors);
       }
 
       return json({ error: 'Not found' }, 404, cors);

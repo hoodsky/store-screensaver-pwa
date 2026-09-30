@@ -3,12 +3,10 @@
   "name": "store-screensaver-sync",
   "main": "src/index.js",
   "compatibility_date": "2026-09-29",
-  "compatibility_flags": ["nodejs_compat"],
-  "r2_buckets": [
-    { "binding": "MEDIA", "bucket_name": "store-screensaver-media" }
+  "kv_namespaces": [
+    { "binding": "VIDEO_META", "id": "42179d597f1543ab9f9edf4932b51660" }
   ],
   "vars": {
-    "R2_BUCKET_NAME": "store-screensaver-media",
-    "ALLOWED_ORIGIN": "https://hoodsky.github.io"
+    "ALLOWED_ORIGIN": "https://jade-gingersnap-2050c5.netlify.app"
   }
 }

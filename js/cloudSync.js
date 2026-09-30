@@ -1,6 +1,8 @@
-// Shared Cloudflare R2 library. Kiosks can read anonymously; only uploads need
-// the administrator password configured as a Worker secret.
+// Public video files live in Google Drive; Cloudflare Workers KV stores only
+// the current file pointer. Devices need no Google login; only an administrator
+// uploads videos, which are shared as "Anyone with the link".
 import { CLOUD_CONFIG } from './cloud-config.js';
+import { GOOGLE_DRIVE_CONFIG } from './google-drive-config.js';
 import * as DB from './db.js';
 import * as Screensaver from './screensaver.js';
 
@@ -29,12 +31,80 @@ async function request(path, options = {}) {
   return response;
 }
 
+async function getGoogleAccessToken() {
+  if (!GOOGLE_DRIVE_CONFIG.clientId || GOOGLE_DRIVE_CONFIG.clientId.startsWith('PASTE_')) {
+    throw new Error('Одноразово налаштуйте Google OAuth Client ID у js/google-drive-config.js');
+  }
+  if (!window.google?.accounts?.oauth2) {
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error('Не вдалося завантажити Google Identity Services'));
+      document.head.append(script);
+    });
+  }
+  if (!window.google?.accounts?.oauth2) throw new Error('Google Identity Services недоступний');
+  return new Promise((resolve, reject) => {
+    const client = window.google.accounts.oauth2.initTokenClient({
+      client_id: GOOGLE_DRIVE_CONFIG.clientId,
+      scope: 'https://www.googleapis.com/auth/drive.file',
+      callback: (result) => result?.access_token
+        ? resolve(result.access_token)
+        : reject(new Error(result?.error_description || result?.error || 'Google не видав токен доступу')),
+      error_callback: (error) => reject(new Error(error?.message || 'Не вдалося увійти в Google')),
+    });
+    client.requestAccessToken();
+  });
+}
+
+async function uploadFileToDrive(file, accessToken) {
+  const mimeType = file.type.startsWith('video/') ? file.type : 'video/mp4';
+  const existing = await request('manifest').then((response) => response.json()).catch(() => null);
+  const fileId = existing?.managedByApp ? existing.fileId : null;
+  const endpointUrl = fileId
+    ? `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=resumable&fields=id,name,mimeType,size,modifiedTime,md5Checksum`
+    : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,mimeType,size,modifiedTime,md5Checksum';
+  const init = await fetch(endpointUrl, {
+    method: fileId ? 'PATCH' : 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json; charset=UTF-8',
+      'X-Upload-Content-Type': mimeType,
+      'X-Upload-Content-Length': String(file.size),
+    },
+    body: JSON.stringify({ name: file.name, mimeType }),
+  });
+  if (!init.ok) throw new Error(`Google Drive не почав завантаження (HTTP ${init.status})`);
+  const uploadUrl = init.headers.get('Location');
+  if (!uploadUrl) throw new Error('Google Drive не повернув адресу resumable upload');
+
+  const uploaded = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': mimeType },
+    body: file,
+  });
+  if (!uploaded.ok) throw new Error(`Завантаження у Google Drive: HTTP ${uploaded.status}`);
+  const driveFile = await uploaded.json();
+
+  const permission = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(driveFile.id)}/permissions?supportsAllDrives=true`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'anyone', role: 'reader' }),
+  });
+  if (!permission.ok && permission.status !== 409) {
+    throw new Error(`Відео завантажене, але не вдалося відкрити доступ для всіх пристроїв (HTTP ${permission.status})`);
+  }
+  return driveFile;
+}
+
 export async function getCachedMeta() {
   return DB.getSetting(META_KEY, null);
 }
 
 export async function refreshSharedVideo() {
-  if (!isConfigured()) throw new Error('Спершу налаштуйте Cloudflare у CLOUDFLARE_SETUP.md');
+  if (!isConfigured()) throw new Error('Спершу налаштуйте Cloudflare Worker у CLOUDFLARE_SETUP.md');
   if (refreshPromise) return refreshPromise;
 
   refreshPromise = (async () => {
@@ -51,6 +121,7 @@ export async function refreshSharedVideo() {
     if (!blob.size) throw new Error('Сховище повернуло порожнє відео');
     await DB.saveVideoBlob(blob, CACHE_KEY);
     await DB.saveSetting(META_KEY, {
+      fileId: remote.fileId,
       etag: remote.etag,
       fileName: remote.fileName || 'video',
       size: blob.size,
@@ -66,26 +137,17 @@ export async function refreshSharedVideo() {
 }
 
 export async function uploadLocalVideo(file, password) {
-  const extensionType = ({ mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime' })[
-    file.name.split('.').pop()?.toLowerCase()
-  ];
-  const contentType = file.type.startsWith('video/') ? file.type : extensionType;
-  if (!contentType) throw new Error('Оберіть відеофайл');
+  if (!file.type.startsWith('video/') && !/\.(mp4|webm|mov|m4v)$/i.test(file.name)) {
+    throw new Error('Оберіть відеофайл');
+  }
   if (!password) throw new Error('Введіть пароль адміністратора синхронізації');
-  const auth = { Authorization: `Bearer ${password}` };
-  const upload = await (await request('upload-url', {
-    method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fileName: file.name, contentType, size: file.size }),
-  })).json();
 
-  const uploaded = await fetch(upload.url, {
-    method: 'PUT', headers: { 'Content-Type': contentType }, body: file,
-  });
-  if (!uploaded.ok) throw new Error(`Завантаження у сховище: HTTP ${uploaded.status}`);
-
-  await request('complete', {
-    method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fileName: file.name }),
+  const accessToken = await getGoogleAccessToken();
+  const driveFile = await uploadFileToDrive(file, accessToken);
+  await request('publish', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${password}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fileId: driveFile.id, resourceKey: '' }),
   });
   active = true;
   return refreshSharedVideo();
